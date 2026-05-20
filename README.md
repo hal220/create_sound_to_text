@@ -1,0 +1,2 @@
+# create_sound_to_text
+ローカルでwhisperを使って音声優先の文字起こしを行う。
