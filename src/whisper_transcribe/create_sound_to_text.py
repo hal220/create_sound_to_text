@@ -25,7 +25,11 @@ def run(cmd: list[str]) -> None:
 def split_audio(input_file: Path, split_dir: Path, segment_seconds: int) -> list[Path]:
     split_dir.mkdir(parents=True, exist_ok=True)
 
-    pattern = split_dir / f"{input_file.stem}_%02d{input_file.suffix}"
+    # 入力名(ファイル名・実行フォルダ名の両方)に "%" があると ffmpeg の番号パターンとして
+    # 解釈されるため、"%02d" 以外の "%" は "%%" にする(実際に作られる名前は "%" のまま)
+    safe_dir = str(split_dir).replace("%", "%%")
+    safe_stem = input_file.stem.replace("%", "%%")
+    pattern = f"{safe_dir}/{safe_stem}_%02d{input_file.suffix}"
 
     run([
         "ffmpeg",
@@ -36,12 +40,23 @@ def split_audio(input_file: Path, split_dir: Path, segment_seconds: int) -> list
         "-segment_time", str(segment_seconds),
         "-reset_timestamps", "1",
         "-c", "copy",
-        str(pattern),
+        pattern,
     ])
 
     # split_dir は実行ごとに新規作成されるので、中身はすべて今回の分割結果。
     # (glob にファイル名を埋め込むと "[" などを含む名前で壊れるため suffix のみで絞る)
-    return sorted(p for p in split_dir.iterdir() if p.suffix == input_file.suffix)
+    # 末尾の番号は %02d なので 100 以降は 3 桁になる。文字列順だと _10, _100, _11 となり
+    # 時刻のオフセットがずれるため、番号を整数として並べ替える。
+    def segment_number(path: Path) -> int:
+        return int(path.stem.rsplit("_", 1)[1])
+
+    return sorted(
+        (
+            p for p in split_dir.iterdir()
+            if p.suffix == input_file.suffix and p.stem.rsplit("_", 1)[-1].isdigit()
+        ),
+        key=segment_number,
+    )
 
 
 def format_time(seconds: float) -> str:
@@ -229,7 +244,7 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         help=(
             "文字起こししたい音声ファイル。例: 20260510_adult_cs.m4a 。"
-            "ファイル名だけを指定した場合は org_audio/ から探します。"
+            "ファイル名だけを指定した場合は org_audio/ を先に探し、なければカレントディレクトリを探します。"
         ),
     )
 
@@ -296,10 +311,14 @@ def parse_args() -> argparse.Namespace:
 
 
 def resolve_input_file(input_file: Path) -> Path | None:
-    """そのままのパス → org_audio/ 配下 の順で探す。"""
-    candidates = [input_file]
-    if not input_file.is_absolute():
-        candidates.append(AUDIO_DIR / input_file)
+    """ファイル名だけなら org_audio/ → カレントディレクトリ、
+    ディレクトリを含む指定ならそのままのパス → org_audio/ 配下 の順で探す。"""
+    if input_file.is_absolute():
+        candidates = [input_file]
+    elif len(input_file.parts) == 1:
+        candidates = [AUDIO_DIR / input_file, input_file]
+    else:
+        candidates = [input_file, AUDIO_DIR / input_file]
 
     for candidate in candidates:
         if candidate.is_file():
