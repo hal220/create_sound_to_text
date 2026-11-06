@@ -1,0 +1,11 @@
+{
+  "safe_replacements": {
+    "（聞き取り誤りの例）": "（正しい人名・固有名詞）"
+  },
+  "contextual_replacements": {
+    "（聞き取り誤りの例）": {
+      "replace_with": "（正しい語）",
+      "condition": "（当てはまる文脈）"
+    }
+  }
+}

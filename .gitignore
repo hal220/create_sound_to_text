@@ -1,0 +1,17 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# 音声データ・文字起こし結果（非公開情報を含みうるためGit管理しない）
+/org_audio/
+/output/
+
+# 教会個別の設定（人名・教会名など。公開しない）
+/config/private/

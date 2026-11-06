@@ -1,0 +1,23 @@
+{
+  "church_name": "（教会名）",
+  "gatherings": [
+    "（集会名）"
+  ],
+  "pastors": [
+    {
+      "name": "（フルネーム）",
+      "title": "牧師",
+      "spoken_as": "（音声での呼び方）"
+    }
+  ],
+  "members": [
+    {
+      "name": "（氏名）",
+      "role": "（役割）"
+    }
+  ],
+  "related_institutions": [
+    "（学校・団体名）"
+  ],
+  "note": "話者・聖書箇所・概要は音声ごとに異なるため、実行のたびに確認する"
+}

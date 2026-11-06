@@ -1,18 +1,20 @@
 # church-transcript-pipeline
 
-ローカルWhisperで音声を荒起こしし、必要に応じてChatGPTで専門語彙を補正するための小さな文字起こしパイプラインです。
+ローカルの Whisper（openai-whisper）と GPU（CUDA）で音声を荒起こしし、必要に応じて Claude Code で専門語彙を二次補正するための、小さな文字起こしパイプラインです。
 
-主な想定用途は、教会の礼拝・説教・教会学校など、一般的な文字起こしでは誤変換されやすい専門語彙を含む日本語音声ですが、py内部のinitial_promptを書き換えることによりその他のニッチ分野の文字起こしをすることも可能です。
-その場合は、.pyのINITIAL_PROMPT、及び/config　内の辞書や定義を適宜書き換えてください。
+主な想定用途は、教会の礼拝・説教・教会学校など、一般的な文字起こしでは誤変換されやすい専門語彙を含む日本語音声です。
+`INITIAL_PROMPT`（`src/whisper_transcribe/create_sound_to_text.py`）と `config/` 内の辞書・定義を書き換えれば、他のニッチな分野にも使えます。
+
+動作環境は Windows 11 + WSL2（Ubuntu）+ uv + CUDA です（Python パッケージ名は `whisper-transcribe`）。
 
 ## このリポジトリでできること
 
 - 音声ファイルを指定分数ごとに分割する
-- ローカルWhisperで文字起こしする
+- ローカルの Whisper で文字起こしする（GPU 対応）
 - `txt` または `srt` 形式で出力する
-- `srt` 出力時は、分割ファイルのタイムスタンプを全体時間へ再同期した `merged.srt` を作成する
-- Whisperの `decode` ログを出力し、`compression_ratio` などを確認する
-- ChatGPT補正用の辞書・用語集・補正方針ファイルを管理する
+- `srt` 出力時は、分割ファイルのタイムスタンプを全体時間に合わせた `merged.srt` を作成する
+- Whisper の `decode` ログを出力し、`compression_ratio` などを確認できる
+- 補正用の辞書・用語集・補正方針を管理し、Claude Code のスキルで二次補正まで一気通貫で行う
 
 ## 全体の流れ
 
@@ -21,199 +23,140 @@
   ↓
 必要に応じて人間が不要区間をカット
   ↓
-create_sound_to_text.py
-  ↓
-Whisper荒起こし
+Whisper 荒起こし（ローカル・GPU）
   ↓
 txt / srt 出力
   ↓
-ChatGPT補正
+二次補正（Claude Code スキル。--correct を付けたときだけ）
   ↓
 人間が最終確認
 ```
 
-## ファイル構成例
+## 前提環境
+
+- Windows 11 + WSL2（Ubuntu）
+- Python 3.12 / uv
+- NVIDIA GPU + CUDA 12.8 対応の PyTorch（`pyproject.toml` で cu128 インデックスを指定済み）
+- ffmpeg（`sudo apt install ffmpeg`）
+
+## ディレクトリ構成
 
 ```text
 church-transcript-pipeline/
-  create_sound_to_text.py
-  README.md
-
-  config/
-    correction_dict.json
-    bible_terms.md
-    transcript_cleanup_policy.md
-
-  input/
-    sermon.wav
-
-  split_audio/
-    20260517_001333_sermon_medium/
-      sermon_00.wav
-      sermon_01.wav
-
-  transcripts/
-    20260517_001333_sermon_medium/
-      _settings.txt
-      sermon_00.txt
-      sermon_01.txt
-      merged.srt
+├── src/whisper_transcribe/create_sound_to_text.py  # 文字起こしスクリプト
+├── config/
+│   ├── correction_dict.json          # 誤変換辞書（教会全般）
+│   ├── bible_terms.md                # 標準表記・読み・誤変換例
+│   ├── transcript_cleanup_policy.md  # 補正方針
+│   ├── private.example/              # 教会個別設定の雛形
+│   └── private/                      # 教会個別設定（Git管理外）
+├── .claude/skills/transcribe-church-audio/  # 二次補正までのスキル
+├── org_audio/   # 元音声を置く（Git管理外）
+└── output/      # 文字起こし結果（Git管理外）
 ```
 
-`split_audio/` と `transcripts/` は実行時に自動生成されます。
+## セットアップ
 
-## 必要なもの
-
-- Python
-- ffmpeg
-- openai-whisper
-- 必要に応じて yt-dlp
-
-### Pythonパッケージ
-
-```powershell
-python -m pip install -U openai-whisper
+```bash
+cd ~/projects/whisper-transcribe
+uv sync --locked
 ```
 
-### ffmpeg
+`--locked` を付けると `uv.lock` どおりにインストールされ、動作中の CUDA 版 PyTorch が勝手に更新されることはありません。
 
-Windowsの場合は `winget` で入れられます。
+GPU 確認:
 
-```powershell
-winget install -e --id Gyan.FFmpeg
+```bash
+uv run python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
 ```
 
-インストール後、PowerShellを開き直して確認します。
+## 音声の用意
 
-```powershell
-ffmpeg -version
+`org_audio/` に音声ファイルを置きます。
+
+### YouTube の音声を使う場合
+
+[yt-dlp](https://github.com/yt-dlp/yt-dlp) で音声だけ取得できます（`uv tool install yt-dlp` などで導入）。
+
+```bash
+yt-dlp -f bestaudio -o "org_audio/sermon.%(ext)s" "YouTubeのURL"
 ```
 
-### yt-dlp
+`.webm` で落ちてきた場合は、Whisper に渡しやすいように `.wav` に変換します。
 
-YouTube音声や字幕を取得する場合に使います。
-
-```powershell
-winget install -e --id yt-dlp.yt-dlp
+```bash
+ffmpeg -i org_audio/sermon.webm -ar 16000 -ac 1 org_audio/sermon.wav
 ```
 
-確認します。
+必要な範囲だけ切り出す場合：
 
-```powershell
-yt-dlp --version
+```bash
+ffmpeg -ss 00:18:35 -to 00:47:20 -i org_audio/sermon.wav -ar 16000 -ac 1 org_audio/sermon_main.wav
 ```
 
-## YouTube音声を使う場合
+前奏・後奏・讃美・会場のざわめき・机の移動などを先に除外しておくと、Whisper の反復幻覚を減らしやすくなります。
 
-YouTubeから音声だけ取得します。
+## 使い方
 
-```powershell
-yt-dlp -f bestaudio -o "sermon.%(ext)s" "YouTubeのURL"
+プロジェクトルートで実行します（ファイル名だけ指定すれば `org_audio/` から探します）。
+
+```bash
+uv run python src/whisper_transcribe/create_sound_to_text.py 20260510_adult_cs.m4a
 ```
 
-`.webm` で落ちてきた場合は、Whisperに渡しやすいように `.wav` に変換します。
+次の短縮形も同じ動作です（どのディレクトリからでも実行可）。
 
-```powershell
-ffmpeg -i "sermon.webm" -ar 16000 -ac 1 "sermon.wav"
+```bash
+uv run whisper-transcribe 20260510_adult_cs.m4a
 ```
 
-必要な範囲だけ切り出す場合は、次のようにします。
+### 主なオプション
 
-```powershell
-ffmpeg -ss 00:18:35 -to 00:47:20 -i "sermon.wav" -ar 16000 -ac 1 "sermon_main.wav"
+| オプション | 既定値 | 説明 |
+|---|---|---|
+| `--model` | `medium` | tiny / base / small / medium / large など |
+| `--segment-minutes` | `10` | ffmpeg で分割する長さ（分） |
+| `--output-format` | `txt` | `txt` または `srt`（`srt` の場合は `merged.srt` も作成） |
+| `--transcript-dir` | `output/` | 出力先 |
+| `--split-dir` | （`output/<実行名>/split_audio/`） | 分割音声の出力先 |
+| `--device` | `auto` | `auto` / `cuda` / `cpu` |
+| `--fp16` / `--no-fp16` | fp16 | GPU では半精度(fp16)推論が既定（高速・省VRAM）。`--no-fp16` で fp32。CPU では常に fp32 |
+| `--verbose` | オフ | Whisper 本体の途中出力を表示（`--verbose True` のようには指定しない） |
+
+例: SRT で出力
+
+```bash
+uv run python src/whisper_transcribe/create_sound_to_text.py 20260510_adult_cs.m4a --output-format srt
 ```
 
-前奏、後奏、讃美、会場ざわめき、机移動などを先に除外しておくと、Whisperの反復幻覚を減らしやすくなります。
+VRAM 6GB の場合、`medium` / `large` は fp16（既定）で使ってください。
 
-## 基本的な使い方
+## 出力
 
-### txtで出力する
-
-```powershell
-python .\create_sound_to_text.py "sermon_main.wav" --model medium --output-format txt
-```
-
-### srtで出力する
-
-```powershell
-python .\create_sound_to_text.py "sermon_main.wav" --model medium --output-format srt
-```
-
-`srt` を指定した場合は、分割ファイルごとのSRTに加えて、全体時間に再同期した `merged.srt` も作成します。
-
-### verboseログを出す
-
-```powershell
-python .\create_sound_to_text.py "sermon_main.wav" --model medium --verbose
-```
-
-`--verbose` は指定した場合だけ `True` になるフラグです。
-
-`--verbose True` や `--verbose False` のようには指定しません。
-
-## オプション
+実行ごとに `output/<日時>_<ファイル名>_<モデル>/` が作られます。
 
 ```text
-input_file
-  文字起こししたい音声ファイル
-
---model
-  Whisperモデル
-  例: tiny, base, small, medium, large
-  デフォルト: small
-
---segment-minutes
-  音声を何分ごとに分割するか
-  デフォルト: 10
-
---split-dir
-  分割音声の出力先
-  デフォルト: split_audio
-
---transcript-dir
-  文字起こし結果の出力先
-  デフォルト: transcripts
-
---output-format
-  txt または srt
-  デフォルト: txt
-
---verbose
-  Whisper本体の途中出力を表示する
+output/20261106_120000_20260510_adult_cs_medium/
+├── _settings.txt              # 実行時の設定
+├── 20260510_adult_cs_00.txt   # 分割ごとの結果（時刻は元音声基準）
+├── 20260510_adult_cs_01.txt
+├── merged.srt                 # --output-format srt のときのみ
+└── split_audio/               # 分割した音声（不要なら削除可）
 ```
 
-## 出力例
+`_settings.txt` には、モデル名、デバイス、分割秒数、出力形式、temperature 設定、fp16 などが保存されます。
 
-```text
-transcripts/
-  20260517_001333_sermon_medium/
-    _settings.txt
-    sermon_main_00.txt
-    sermon_main_01.txt
-```
+## Whisper 設定の考え方
 
-SRTの場合:
-
-```text
-transcripts/
-  20260517_001333_sermon_medium/
-    _settings.txt
-    sermon_main_00.srt
-    sermon_main_01.srt
-    merged.srt
-```
-
-`_settings.txt` には、モデル名、分割秒数、出力形式、temperature設定などが保存されます。
-
-## Whisper設定の考え方
-
-このスクリプトでは、Whisper呼び出し時に次のような設定を使っています。
+Whisper の呼び出しには次の設定を使っています。
 
 ```python
 temperature=(0.0, 0.2, 0.4, 0.6, 0.8, 1.0)
 condition_on_previous_text=False
-fp16=False
+fp16=True   # GPU のとき。--no-fp16 で False
 ```
+
+Windows 版（`fp16=False`）から変えたのは、GPU 実行時の `fp16` の既定だけです。
 
 ### temperature fallback
 
@@ -224,203 +167,73 @@ fp16=False
 日本語で聞いています……
 ```
 
-そのため、temperatureをtupleで渡し、Whisperが怪しい出力を検知した場合に再試行できるようにしています。
+そのため temperature をタプルで渡し、Whisper が怪しい出力を検知したときに温度を上げて再試行させます。
+再試行には乱数が入るため、**同じ音声でも実行のたびに結果が少し変わることがあります**。
 
 ### compression_ratio
 
-このスクリプトでは、Whisperの `model.decode` をラップして、次のようなログを出します。
+`model.decode` をラップして、次のようなログを出します。
 
 ```text
 [decode] count=18 temperature=0.0 avg_logprob=-0.215 compression_ratio=15.06 no_speech_prob=0.81
 [decode] count=19 temperature=0.2 avg_logprob=-1.500 compression_ratio=0.96 no_speech_prob=0.81
 ```
 
-`compression_ratio` が極端に高い場合、同じ語句を繰り返している可能性があります。
+`compression_ratio` が極端に高い（目安：2.4 超）場合、同じ語句を繰り返している可能性があります。反復幻覚や非発話区間を見つける手がかりになります。
 
-反復幻覚や非発話区間を見つける手がかりとして使えます。
+### initial_prompt
 
-## initial_promptについて
+`INITIAL_PROMPT` には、音声の大まかな文脈（教会の礼拝音声であること）だけを入れています。
+専門語彙や読み仮名を大量に入れても、必ずしも精度は上がらず、プロンプト由来の語に引っ張られて壊れる場合があります。
+そのため Whisper には最低限の文脈だけを渡し、専門語彙の補正は後段の二次補正に回します。
 
-`INITIAL_PROMPT` には、音声の大まかな文脈だけを入れています。
+## 二次補正（Claude Code スキル）
 
-専門語彙や読み仮名を大量に入れても、必ずしも精度は上がりません。  
-むしろ、プロンプト由来の語に引っ張られて壊れる場合があります。
-
-そのため、Whisperには最低限の文脈だけを渡し、専門語彙の補正は後段のChatGPT補正に回します。
-
-## ChatGPT補正用の3ファイル
-
-Whisperの出力は荒起こしです。  
-そのまま完成稿として使うのではなく、ChatGPTで補正することを想定しています。
-
-補正用に、以下の3ファイルを使います。
+[.claude/skills/transcribe-church-audio/](.claude/skills/transcribe-church-audio/SKILL.md) に、Whisper の実行から二次補正までのスキルがあります。
+Claude Code をこのプロジェクトで開き、次のように呼び出します。
 
 ```text
-correction_dict.json
-bible_terms.md
-transcript_cleanup_policy.md
+/transcribe-church-audio 20260510_adult_cs.m4a              # Whisper まで（本文は AI に読ませない）
+/transcribe-church-audio 20260510_adult_cs.m4a --correct    # Whisper → Claude による二次補正まで
+
+話者：○○さん（教会員、小学校の教師）
+聖書箇所：ヨハネの黙示録21:3〜4
+概要：…
 ```
 
-### correction_dict.json
+- `--correct` を付けたときだけ、文字起こしの本文を Claude Code（Anthropic）に読ませて補正します。
+  **AI に読ませてよい音声にだけ付けてください。**
+- 話者・聖書箇所・概要を添えると、人名や聖書箇所の聞き取り誤りを直しやすくなります（書かなければ聞き返されます）。
+- 補正結果は `output/<実行名>/<音声名>_NN_corrected.txt` に保存します。元の Whisper 出力は上書きしません。
 
-Whisperの誤変換を補正する辞書です。
+### 補正用の設定（config/）
 
-例:
+| 場所 | 内容 | Git |
+|---|---|---|
+| `config/correction_dict.json` | キリスト教会全般の誤変換辞書 | 管理する |
+| `config/bible_terms.md` | 聖書書名・人名・教会用語の標準表記、読み、誤変換例 | 管理する |
+| `config/transcript_cleanup_policy.md` | 補正方針 | 管理する |
+| `config/private/` | **教会個別**の人名・教会名・学校名などの辞書（`correction_dict.json`）とプロフィール（`church_profile.json`） | **管理しない** |
+| `config/private.example/` | 上記の雛形（実名なし） | 管理する |
 
-```json
-{
-  "safe_replacements": {
-    "心霊記": "申命記",
-    "心霊器": "申命記",
-    "神明記": "申命記",
-    "新名記": "申命記",
-    "新兵器": "申命記",
-    "霊廃": "礼拝",
-    "例杯": "礼拝",
-    "マータイ": "マタイ",
-    "精霊": "聖霊",
-    "創世紀": "創世記",
-    "出エジプト紀": "出エジプト記"
-  },
-  "contextual_replacements": {
-    "罠": {
-      "replace_with": "マナ",
-      "condition": "申命記8章3節の文脈の場合のみ"
-    }
-  }
-}
-```
+新しい環境では `cp -r config/private.example config/private` で雛形をコピーして書き換えます。
 
-#### safe_replacements
+**`correction_dict.json`** は誤変換の辞書です。
 
-文脈を見なくてもほぼ置換してよい誤変換です。
+- `safe_replacements`：文脈を見なくてもほぼ置換してよい誤変換（例：`新兵器 → 申命記`、`例杯 → 礼拝`）。
+- `contextual_replacements`：文脈を見て判断する補正。`condition` に当てはまる場合だけ置換します（例：`罠 → マナ` は特定の聖書箇所の文脈のみ）。
+- `protected_terms`：誤って直さないための保護リスト。
 
-例:
+**`bible_terms.md`** は標準表記の参照リストです。Whisper の誤変換は実行のたびに変わるため、後半に「読みと誤変換例」を載せ、機械的な置換ではなく、音から正しい語を推定する手がかりとして使います。
 
-```text
-新兵器 → 申命記
-霊廃 → 礼拝
-```
-
-#### contextual_replacements
-
-文脈を見て判断する補正です。
-
-例:
-
-```text
-罠 → マナ
-```
-
-これは申命記8章3節の文脈では有効ですが、常に置換してよいとは限りません。
-
-### bible_terms.md
-
-聖書書名、人名、教会用語などの標準表記リストです。
-
-例:
-
-```markdown
-# 聖書・教会用語
-
-## 聖書書名
-
-- 創世記
-- 出エジプト記
-- レビ記
-- 民数記
-- 申命記
-- マタイによる福音書
-- ヨハネによる福音書
-- ローマの信徒への手紙
-
-## 人名
-
-- モーセ
-- マタイ
-- ヨハネ
-- イエス・キリスト
-- ヘロデ王
-
-## 教会用語
-
-- 礼拝
-- 祈り
-- 御言葉
-- 聖霊
-- 聖餐
-- 頌栄
-- 祝祷
-```
-
-`correction_dict.json` が「誤変換 → 正しい表記」の対応表であるのに対し、`bible_terms.md` は標準表記の参照リストです。
-
-### transcript_cleanup_policy.md
-
-ChatGPTに補正させるときの作業方針です。
-
-例:
-
-```markdown
-# 文字起こし補正方針
-
-## 基本方針
-
-Whisperによる文字起こしを、教会文脈として自然な日本語に補正する。
-
-ただし、発話者が言っていない内容を勝手に追加しない。  
-判断できない箇所は【要確認】または【聞き取り不明】として残す。
-
-## 補正してよいもの
-
-- 明らかな誤変換
-- 聖書書名
-- 人名
-- 教会用語
-- 章・節表記
-- 明らかな反復幻覚
-- 会場ざわめきや非発話区間の整理
-
-## 勝手に変えてはいけないもの
-
-- 神学的主張
-- 否定・肯定
-- 数字
-- 日付
-- 章・節
-- 話者の意図
-
-## 反復幻覚の扱い
-
-同じ語句が不自然に連続する場合は、本文として無理に残さず、必要に応じて以下のように整理する。
-
-[会場ざわめき／音声要確認]
-[反復幻覚の可能性。音声要確認]
-```
-
-## ChatGPTへの補正依頼例
-
-```text
-File Library または添付ファイルの correction_dict.json、bible_terms.md、transcript_cleanup_policy.md を参照して、
-以下のWhisper文字起こしを補正してください。
-
-- safe_replacements は原則置換してください。
-- contextual_replacements は文脈が合う場合のみ置換してください。
-- 聖書書名、人名、章節、教会用語は bible_terms.md の標準表記を優先してください。
-- 発話者が言っていない内容を勝手に追加しないでください。
-- 判断できない箇所は【要確認】または【聞き取り不明】として残してください。
-- 反復幻覚や会場ざわめきと思われる箇所は、無理に本文化せず整理してください。
-- 最後に要確認箇所の一覧を出してください。
-
-以下、文字起こし本文：
-```
+**`transcript_cleanup_policy.md`** は補正方針です。補正してよいもの（明らかな誤変換、聖書書名、人名、教会用語、章節表記、反復幻覚の整理）と、勝手に変えてはいけないもの（神学的主張、否定・肯定、数字、日付、章節、話者の意図）を定め、判断できない箇所は【要確認】【聞き取り不明】で残します。
 
 ## 安全上の注意
 
-このスクリプト自体は、音声をローカルで処理します。  
-ただし、ChatGPTやOpenAI APIで補正する場合、文字起こしテキストを外部サービスへ送信することになります。
+Whisper による文字起こし自体は、音声をローカルで処理します。
+一方、`--correct`（Claude Code による二次補正）や、ChatGPT などの外部 AI を使う場合は、**文字起こしテキストを外部サービスへ送信すること**になります。
 
-教会音声には、以下のような情報が混ざる可能性があります。
+教会音声には、次のような情報が混ざる可能性があります。
 
 - 個人名
 - 祈祷課題
@@ -429,42 +242,35 @@ File Library または添付ファイルの correction_dict.json、bible_terms.m
 - 内輪の運営話
 - 公開前の情報
 
-そのため、外部AIに送る前に、人間が一度確認する運用を推奨します。
+外部に送ってよい音声かどうかを、毎回人間が判断してください（スキルは `--correct` が指定されたときだけ本文を読みます）。
+外部 AI に送る前に、人間が一度確認し、必要なら伏字化する運用もおすすめです。
 
 ```text
-raw/
-  Whisper荒起こし
-
-reviewed/
-  人間が確認・伏字化したもの
-
-corrected/
-  ChatGPT補正後
+raw/        Whisper 荒起こし
+reviewed/   人間が確認・伏字化したもの
+corrected/  AI 補正後
 ```
 
-将来的にAPI化する場合も、`raw` を直接送らず、`reviewed` のみを送る設計にすると安全です。
+`org_audio/`・`output/`・`config/private/` は非公開情報を含みうるため `.gitignore` で除外しています。**これらを Git に含めないでください。**
 
 ## 推奨運用
 
 ```text
 1. 音声を用意する
 2. 不要区間を人間が切る
-3. create_sound_to_text.py で荒起こしする
-4. raw出力を人間が確認する
+3. 荒起こしする（Whisper）
+4. raw 出力を人間が確認する
 5. 必要なら個人情報や不要区間を伏字・削除する
-6. reviewedとして保存する
-7. ChatGPTに補正させる
-8. 人間が最終確認する
+6. AI に読ませてよい音声なら --correct で二次補正する
+7. 人間が最終確認する（【要確認】の箇所は音声で確かめる）
 ```
 
-## 注意: 完全自動化しない
+## 完全自動化しない
 
-このパイプラインは、AIにすべてを任せるためのものではありません。
+このパイプラインは、AI にすべてを任せるためのものではありません。
+Whisper も AI 補正も誤ります。特に専門語彙、固有名詞、聖書箇所、章・節、数字は必ず人間が確認してください。
 
-WhisperもChatGPTも誤ります。  
-特に専門語彙、固有名詞、聖書箇所、章・節、数字は必ず人間が確認してください。
-
-このパイプラインの目的は、
+目的は、
 
 ```text
 人間が最初から全部聞き起こす負担を減らす
@@ -482,11 +288,11 @@ WhisperもChatGPTも誤ります。
 
 未定。
 
-公開する場合は、使用しているライブラリのライセンスも確認してください。
+公開する場合は、使用しているライブラリ（openai-whisper、PyTorch など）のライセンスも確認してください。
 
 ## 免責
 
-このリポジトリのコードや設定ファイルは、個人利用・検証用途のものです。  
+このリポジトリのコードや設定ファイルは、個人利用・検証用途のものです。
 文字起こし結果の正確性は保証しません。
 
 公開・配布・字幕化などに使う場合は、必ず元音声と照合し、人間が最終確認してください。
